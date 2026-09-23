@@ -1,7 +1,27 @@
+import os
+import urllib.request
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import google.generativeai as genai
+
+# -----------------------------
+# 폰트 깨짐 방지 (한글 폰트 자동 설정)
+# -----------------------------
+@st.cache_resource
+def load_korean_font():
+    font_path = "NanumGothic.ttf"
+    if not os.path.exists(font_path):
+        # 나눔고딕 폰트 다운로드
+        url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
+        urllib.request.urlretrieve(url, font_path)
+    
+    fm.fontManager.addfont(font_path)
+    plt.rc('font', family='NanumGothic')
+    plt.rcParams['axes.unicode_minus'] = False  # 마이너스 기호 깨짐 방지
+
+load_korean_font()
 
 # -----------------------------
 # Streamlit 기본 설정
@@ -12,21 +32,21 @@ st.title("🎛️ 온오프 / P / PID 제어 시뮬레이터 & AI 진단")
 st.markdown("공정 변수와 PID 설정을 실시간으로 조절하고, Google Gemini AI를 통해 제어 성능을 분석받으세요.")
 
 # -----------------------------
-# 사이드바: 파라미터 설정
+# 사이드바: 파라미터 설정 (이미지와 동일한 기본값 설정)
 # -----------------------------
 st.sidebar.header("⚙️ 1. 공정 모델 설정")
 TAU = st.sidebar.number_input("시상수 (tau, 초)", value=300.0, step=10.0)
 DELAY = st.sidebar.number_input("시간 지연 (delay, 초)", value=30.0, step=5.0)
 PROCESS_GAIN = st.sidebar.number_input("공정 이득 (K_p)", value=16.0, step=1.0)
-AMBIENT = st.sidebar.number_input("주위/초기 온도 (°C)", value=25.0, step=5.0)
+AMBIENT = st.sidebar.number_input("주위/초기 온도 (°C)", value=25.0, step=5.0)  # 기본값 25°C로 고정
 SP = st.sidebar.number_input("목표 설정값 (SP, °C)", value=1000.0, step=50.0)
 TOTAL_TIME = st.sidebar.number_input("총 시뮬레이션 시간 (초)", value=5400.0, step=600.0)
 DT = 1.0
 
 st.sidebar.header("🎛️ 2. PID 튜닝 파라미터")
-Kc = st.sidebar.slider("Kc (비례 이득)", min_value=0.01, max_value=3.0, value=0.3, step=0.01)
-Ti = st.sidebar.slider("Ti (적분 시간, 초)", min_value=1.0, max_value=1000.0, value=200.0, step=10.0)
-Td = st.sidebar.slider("Td (미분 시간, 초)", min_value=0.0, max_value=200.0, value=25.0, step=5.0)
+Kc = st.sidebar.slider("Kc (비례 이득)", min_value=0.01, max_value=3.0, value=0.63, step=0.01)
+Ti = st.sidebar.slider("Ti (적분 시간, 초)", min_value=1.0, max_value=1000.0, value=571.0, step=1.0)
+Td = st.sidebar.slider("Td (미분 시간, 초)", min_value=0.0, max_value=200.0, value=90.0, step=1.0)
 
 # -----------------------------
 # 시뮬레이션 연산 함수
@@ -120,7 +140,7 @@ def simulate_pid(Kc_val, Ti_val, Td_val):
     output[-1] = output[-2]
     return t, temp, output
 
-# 시뮬레이션 실행
+# 시뮬레이션 연산 실행
 t, onoff_temp, onoff_output = simulate_onoff()
 _, p_temp, _ = simulate_p()
 _, pid_temp, _ = simulate_pid(Kc, Ti, Td)
@@ -143,7 +163,7 @@ col3.metric("③ PID 최종오차", f"{pid_final_error:.2f} °C (최종: {pid_te
 st.divider()
 
 # -----------------------------
-# 그래프 생성
+# 그래프 시각화 (한글 정상 출력)
 # -----------------------------
 fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(11, 10))
 
@@ -187,7 +207,6 @@ st.divider()
 st.subheader("🤖 AI 제어 성능 분석")
 
 if st.button("Gemini AI로 튜닝 상태 분석하기"):
-    # Streamlit Cloud에 저장된 API 키 가져오기
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
         try:

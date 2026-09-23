@@ -7,50 +7,52 @@ import matplotlib.font_manager as fm
 import google.generativeai as genai
 
 # -----------------------------
-# 폰트 깨짐 방지 (한글 폰트 자동 설정)
+# 1. 폰트 깨짐 방지 (한글 폰트 설정)
 # -----------------------------
 @st.cache_resource
 def load_korean_font():
     font_path = "NanumGothic.ttf"
     if not os.path.exists(font_path):
-        # 나눔고딕 폰트 다운로드
         url = "https://github.com/google/fonts/raw/main/ofl/nanumgothic/NanumGothic-Regular.ttf"
         urllib.request.urlretrieve(url, font_path)
     
     fm.fontManager.addfont(font_path)
     plt.rc('font', family='NanumGothic')
-    plt.rcParams['axes.unicode_minus'] = False  # 마이너스 기호 깨짐 방지
+    plt.rcParams['axes.unicode_minus'] = False
 
 load_korean_font()
 
 # -----------------------------
-# Streamlit 기본 설정
+# 2. Streamlit 기본 설정
 # -----------------------------
-st.set_page_config(page_title="PID 제어 시뮬레이터 + AI 분석", layout="wide")
-
-st.title("🎛️ 온오프 / P / PID 제어 시뮬레이터 & AI 진단")
-st.markdown("공정 변수와 PID 설정을 실시간으로 조절하고, Google Gemini AI를 통해 제어 성능을 분석받으세요.")
+st.set_page_config(page_title="PID 제어기 시뮬레이터", layout="wide")
+st.title("🎛️ 온오프 / P / PI / PID 제어기 시뮬레이터")
 
 # -----------------------------
-# 사이드바: 파라미터 설정 (이미지와 동일한 기본값 설정)
+# 3. [공정 모델 조건 고정]
+# 300·dT/dt = -(T - 25) + 16·u(t-30), SP=1000℃, 총 5400초, dt=1초
 # -----------------------------
-st.sidebar.header("⚙️ 1. 공정 모델 설정")
-TAU = st.sidebar.number_input("시상수 (tau, 초)", value=300.0, step=10.0)
-DELAY = st.sidebar.number_input("시간 지연 (delay, 초)", value=30.0, step=5.0)
-PROCESS_GAIN = st.sidebar.number_input("공정 이득 (K_p)", value=16.0, step=1.0)
-AMBIENT = st.sidebar.number_input("주위/초기 온도 (°C)", value=25.0, step=5.0)  # 기본값 25°C로 고정
-SP = st.sidebar.number_input("목표 설정값 (SP, °C)", value=1000.0, step=50.0)
-TOTAL_TIME = st.sidebar.number_input("총 시뮬레이션 시간 (초)", value=5400.0, step=600.0)
+TAU = 300.0
+DELAY = 30.0
+PROCESS_GAIN = 16.0
+AMBIENT = 25.0
+SP = 1000.0
+TOTAL_TIME = 5400.0
 DT = 1.0
 
-st.sidebar.header("🎛️ 2. PID 튜닝 파라미터")
-Kc = st.sidebar.slider("Kc (비례 이득)", min_value=0.01, max_value=3.0, value=0.63, step=0.01)
-Ti = st.sidebar.slider("Ti (적분 시간, 초)", min_value=1.0, max_value=1000.0, value=571.0, step=1.0)
-Td = st.sidebar.slider("Td (미분 시간, 초)", min_value=0.0, max_value=200.0, value=90.0, step=1.0)
+# -----------------------------
+# 4. 사이드바: PID 튜닝 파라미터 (조건 기본값: Kc=0.3, Ti=200, Td=25)
+# -----------------------------
+st.sidebar.header("🎛️ PID 튜닝 파라미터")
+Kc = st.sidebar.number_input("비례 이득 (Kc)", value=0.3, step=0.05, format="%.2f")
+Ti = st.sidebar.number_input("적분 시간 (τI, 초)", value=200.0, step=10.0, format="%.1f")
+Td = st.sidebar.number_input("미분 시간 (τD, 초)", value=25.0, step=5.0, format="%.1f")
 
 # -----------------------------
-# 시뮬레이션 연산 함수
+# 5. 제어기 시뮬레이션 함수들
 # -----------------------------
+
+# ① 온오프 제어 (히스테리시스 ±5℃: T <= 995 -> u=100, T >= 1005 -> u=0)
 def simulate_onoff():
     n = int(TOTAL_TIME / DT)
     t = np.arange(n + 1) * DT
@@ -62,9 +64,9 @@ def simulate_onoff():
 
     for k in range(n):
         T = temp[k]
-        if T <= SP - 5.0:
+        if T <= (SP - 5.0):
             u = 100.0
-        elif T >= SP + 5.0:
+        elif T >= (SP + 5.0):
             u = 0.0
         else:
             u = output[k - 1] if k > 0 else 100.0
@@ -79,6 +81,7 @@ def simulate_onoff():
     output[-1] = output[-2]
     return t, temp, output
 
+# ② P 제어: u = 0.3 * e (0~100% 제한)
 def simulate_p():
     n = int(TOTAL_TIME / DT)
     t = np.arange(n + 1) * DT
@@ -89,8 +92,8 @@ def simulate_p():
     delay_buffer = [0.0] * delay_steps
 
     for k in range(n):
-        error = SP - temp[k]
-        u = float(np.clip(0.3 * error, 0.0, 100.0))
+        e = SP - temp[k]
+        u = float(np.clip(0.3 * e, 0.0, 100.0))
         output[k] = u
         delayed_u = delay_buffer.pop(0)
         delay_buffer.append(u)
@@ -101,6 +104,41 @@ def simulate_p():
     output[-1] = output[-2]
     return t, temp, output
 
+# ③ PI 제어 (비교용)
+def simulate_pi(Kc_val, Ti_val):
+    n = int(TOTAL_TIME / DT)
+    t = np.arange(n + 1) * DT
+    temp = np.zeros(n + 1)
+    output = np.zeros(n + 1)
+    temp[0] = AMBIENT
+    delay_steps = max(1, int(DELAY / DT))
+    delay_buffer = [0.0] * delay_steps
+
+    integral = 0.0
+
+    for k in range(n):
+        e = SP - temp[k]
+        candidate_integral = integral + (e / Ti_val) * DT
+        raw_output = Kc_val * (e + candidate_integral)
+        u = float(np.clip(raw_output, 0.0, 100.0))
+
+        # Anti-windup (포화 시 적분 중지)
+        saturating_high = (raw_output > 100.0) and (e > 0)
+        saturating_low = (raw_output < 0.0) and (e < 0)
+        if not (saturating_high or saturating_low):
+            integral = candidate_integral
+
+        output[k] = u
+        delayed_u = delay_buffer.pop(0)
+        delay_buffer.append(u)
+
+        dTdt = (-(temp[k] - AMBIENT) + PROCESS_GAIN * delayed_u) / TAU
+        temp[k + 1] = temp[k] + DT * dTdt
+
+    output[-1] = output[-2]
+    return t, temp, output
+
+# ④ PID 제어: 출력 포화 시 적분 누적 중지 (Anti-windup 적용)
 def simulate_pid(Kc_val, Ti_val, Td_val):
     n = int(TOTAL_TIME / DT)
     t = np.arange(n + 1) * DT
@@ -114,84 +152,86 @@ def simulate_pid(Kc_val, Ti_val, Td_val):
     previous_error = SP - temp[0]
 
     for k in range(n):
-        error = SP - temp[k]
-        derivative = (error - previous_error) / DT
-        candidate_integral = integral + (error / Ti_val) * DT
+        e = SP - temp[k]
+        derivative = (e - previous_error) / DT
+        candidate_integral = integral + (e / Ti_val) * DT
 
-        raw_output = Kc_val * (error + candidate_integral + Td_val * derivative)
+        raw_output = Kc_val * (e + candidate_integral + Td_val * derivative)
         u = float(np.clip(raw_output, 0.0, 100.0))
 
-        saturating_high = (raw_output > 100.0) and (error > 0)
-        saturating_low = (raw_output < 0.0) and (error < 0)
-
+        # Anti-windup: 출력 포화 시 적분 누적 중지
+        saturating_high = (raw_output > 100.0) and (e > 0)
+        saturating_low = (raw_output < 0.0) and (e < 0)
         if not (saturating_high or saturating_low):
             integral = candidate_integral
 
-        u = float(np.clip(Kc_val * (error + integral + Td_val * derivative), 0.0, 100.0))
         output[k] = u
-
         delayed_u = delay_buffer.pop(0)
         delay_buffer.append(u)
 
         dTdt = (-(temp[k] - AMBIENT) + PROCESS_GAIN * delayed_u) / TAU
         temp[k + 1] = temp[k] + DT * dTdt
-        previous_error = error
+        previous_error = e
 
     output[-1] = output[-2]
     return t, temp, output
 
-# 시뮬레이션 연산 실행
+# -----------------------------
+# 6. 연산 실행 및 지표 계산
+# -----------------------------
 t, onoff_temp, onoff_output = simulate_onoff()
 _, p_temp, _ = simulate_p()
+_, pi_temp, _ = simulate_pi(Kc, Ti)
 _, pid_temp, _ = simulate_pid(Kc, Ti, Td)
 
-# 결과 지표 계산
-last5 = t >= (TOTAL_TIME - 300)
-onoff_amp = np.max(onoff_temp[last5]) - np.min(onoff_temp[last5])
-p_final_avg = np.mean(p_temp[last5])
-p_residual = SP - p_final_avg
+# 지표 계산
+# 1) 온오프의 진동 폭 (마지막 30분 = 3600초 ~ 5400초 구간)
+last_30min = t >= (TOTAL_TIME - 1800)
+onoff_amp = np.max(onoff_temp[last_30min]) - np.min(onoff_temp[last_30min])
+
+# 2) P 제어의 잔류편차 (마지막 5분 평균 기준)
+last_5min = t >= (TOTAL_TIME - 300)
+p_residual = SP - np.mean(p_temp[last_5min])
+
+# 3) PID 제어의 최종 오차
 pid_final_error = SP - pid_temp[-1]
 
 # -----------------------------
-# 결과 지표 출력
+# 7. 그래프 출력 (요구조건 3개)
 # -----------------------------
-col1, col2, col3 = st.columns(3)
-col1.metric("① ON/OFF 진동폭", f"{onoff_amp:.2f} °C")
-col2.metric("② P 잔류편차", f"{p_residual:.2f} °C")
-col3.metric("③ PID 최종오차", f"{pid_final_error:.2f} °C (최종: {pid_temp[-1]:.1f}°C)")
+fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
 
-st.divider()
-
-# -----------------------------
-# 그래프 시각화 (한글 정상 출력)
-# -----------------------------
-fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(11, 10))
-
+# 그래프 1) 온오프의 온도 전체 곡선
 ax1.plot(t / 60, onoff_temp, label="ON/OFF 온도", color="tab:blue")
-ax1.axhline(SP, color="red", linestyle="--", label="설정값")
-ax1.set_title("① ON/OFF 제어 온도 전체 곡선")
+ax1.axhline(SP, color="red", linestyle="--", label="설정값 (1000°C)")
+ax1.set_title("1) 온오프 제어 온도 전체 곡선")
 ax1.set_ylabel("온도 (°C)")
+ax1.set_xlabel("시간 (min)")
 ax1.grid(True, alpha=0.3)
 ax1.legend()
 
-mask = (t >= 2400) & (t <= 4200)
-ax2.plot(t[mask] / 60, onoff_temp[mask], label="온도", color="tab:blue")
-ax2.axhline(SP, color="red", linestyle="--", label="설정값")
-ax2.set_title("② 40~70분 구간 확대: 온도 + 히터 출력")
+# 그래프 2) 40~70분 구간 확대: 온도와 히터 출력(계단 모양)
+mask_40_70 = (t >= 2400) & (t <= 4200)
+ax2.plot(t[mask_40_70] / 60, onoff_temp[mask_40_70], label="온도", color="tab:blue")
+ax2.axhline(SP, color="red", linestyle="--", label="설정값 (1000°C)")
+ax2.set_title("2) 40~70분 구간 확대: 온도 + 히터 출력")
 ax2.set_ylabel("온도 (°C)")
+ax2.set_xlabel("시간 (min)")
 ax2.grid(True, alpha=0.3)
 
-ax2b = ax2.twinx()
-ax2b.step(t[mask] / 60, onoff_output[mask], where="post", color="tab:orange", alpha=0.7, label="히터 출력")
-ax2b.set_ylabel("출력 (%)")
-ax2b.set_ylim(-5, 105)
+ax2_twin = ax2.twinx()
+ax2_twin.step(t[mask_40_70] / 60, onoff_output[mask_40_70], where="post", color="tab:orange", alpha=0.7, label="히터 출력 (%)")
+ax2_twin.set_ylabel("히터 출력 (%)")
+ax2_twin.set_ylim(-5, 105)
 
-ax3.plot(t / 60, onoff_temp, label="ON/OFF", alpha=0.6)
-ax3.plot(t / 60, p_temp, label="P 제어", alpha=0.6)
-ax3.plot(t / 60, pid_temp, label=f"PID (Kc={Kc}, Ti={Ti}s, Td={Td}s)", linewidth=2, color="tab:green")
-ax3.axhline(SP, color="red", linestyle="--", label="설정값")
-ax3.set_ylim(SP - 250, SP + 100)
-ax3.set_title("③ 제어기별 온도 비교")
+# 그래프 3) 세 제어기의 온도 비교 (y축 750~1100℃로 확대)
+ax3.plot(t / 60, onoff_temp, label="ON/OFF", alpha=0.5)
+ax3.plot(t / 60, p_temp, label="P 제어 (u=0.3e)", alpha=0.7)
+ax3.plot(t / 60, pi_temp, label=f"PI 제어 (Kc={Kc}, τI={Ti}s)", alpha=0.7)
+ax3.plot(t / 60, pid_temp, label=f"PID 제어 (Kc={Kc}, τI={Ti}s, τD={Td}s)", linewidth=2, color="tab:green")
+ax3.axhline(SP, color="red", linestyle="--", label="설정값 (1000°C)")
+ax3.set_ylim(750, 1100)  # y축 750~1100℃ 정확하게 고정
+ax3.set_title("3) 제어기별 온도 비교 (Y축 확대: 750 ~ 1100°C)")
 ax3.set_xlabel("시간 (min)")
 ax3.set_ylabel("온도 (°C)")
 ax3.grid(True, alpha=0.3)
@@ -201,33 +241,37 @@ plt.tight_layout()
 st.pyplot(fig)
 
 # -----------------------------
-# AI 분석 연동 (Streamlit Secrets 사용)
+# 8. 마지막 결과 지표 출력
 # -----------------------------
 st.divider()
-st.subheader("🤖 AI 제어 성능 분석")
+st.subheader("📊 제어 성능 측정 결과")
 
-if st.button("Gemini AI로 튜닝 상태 분석하기"):
+col1, col2, col3 = st.columns(3)
+col1.metric("① 온오프 진동 폭 (마지막 30분)", f"{onoff_amp:.2f} °C")
+col2.metric("② P 제어 잔류편차", f"{p_residual:.2f} °C")
+col3.metric("③ PID 최종 오차", f"{pid_final_error:.2f} °C")
+
+# -----------------------------
+# 9. AI 분석 연동 (Streamlit Secrets)
+# -----------------------------
+st.divider()
+if st.button("Gemini AI로 튜닝 분석받기"):
     if "GEMINI_API_KEY" in st.secrets:
-        api_key = st.secrets["GEMINI_API_KEY"]
         try:
-            genai.configure(api_key=api_key)
+            genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
             model = genai.GenerativeModel('gemini-1.5-flash')
-            
             prompt = f"""
-            당신은 제어공학 전문가입니다. 아래 PID 제어 시뮬레이션 결과를 분석하고 튜닝 피드백을 제공해 주세요.
+            제어공학 실습 평가를 진행해 주세요.
+            - 공정: FOPDT (Tau=300, Delay=30, Kp=16, Ambient=25, SP=1000)
+            - 설정된 PID 파라미터: Kc={Kc}, Ti={Ti}s, Td={Td}s
+            - 결과: ON/OFF 진동폭={onoff_amp:.2f}°C, P 잔류편차={p_residual:.2f}°C, PID 최종오차={pid_final_error:.2f}°C
 
-            - 설정값(SP): {SP} °C
-            - 공정 조건: 시상수={TAU}s, 지연시간={DELAY}s, 공정이득={PROCESS_GAIN}
-            - 현재 PID 파라미터: Kc={Kc}, Ti={Ti}s, Td={Td}s
-            - 결과: 최종 온도={pid_temp[-1]:.2f} °C, 최종 오차={pid_final_error:.2f} °C
-
-            위 설정이 적절한지 평가하고, 응답 속도를 개선하거나 오버슈트/잔류편차를 줄이기 위해 Kc, Ti, Td를 어떻게 수정해야 할지 친절하게 알려주세요.
+            위 결과를 바탕으로 P, PI, PID 제어기의 특성을 비교하고 현재 튜닝 파라미터에 대한 피드백을 간략히 작성해 주세요.
             """
-            
-            with st.spinner("AI가 시뮬레이션 결과를 분석 중입니다..."):
-                response = model.generate_content(prompt)
-                st.write(response.text)
+            with st.spinner("AI 분석 중..."):
+                res = model.generate_content(prompt)
+                st.write(res.text)
         except Exception as e:
-            st.error(f"AI 연동 오류: {e}")
+            st.error(f"오류 발생: {e}")
     else:
-        st.warning("Streamlit Cloud 설정(Secrets)에 GEMINI_API_KEY가 등록되지 않았습니다.")
+        st.warning("Secrets에 GEMINI_API_KEY를 등록해 주세요.")
